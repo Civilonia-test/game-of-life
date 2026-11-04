@@ -78,6 +78,9 @@ following contract applies to every board:
 
 ## Simulation semantics
 
+A complete description of experiment conditions, rules, and reproducible
+validation examples is in the [simulation specification](docs/simulation-specification.md).
+
 A simulation input consists of an initial immutable board and a non-negative
 number of transitions, `N`. A zero transition count is valid.
 
