@@ -1,12 +1,81 @@
-# Game of Life simulation specification
+# Game of Life simulator specification
 
 ## Purpose and scope
 
-This document defines the conditions and expected behavior of a deterministic
-Conway's Game of Life experiment. It describes the current finite-board Java
-library, its inputs and outputs, and reproducible checks. The initial patterns
-below are project examples; finite boundaries can change their behavior once a
-pattern reaches an edge.
+This document defines the finite-board Conway's Game of Life Java library: its
+state model, transition rules, public API contract, and binary input/output.
+The library targets Java 21 and has no runtime dependencies outside the Java
+standard library.
+
+## Structure and responsibility boundaries
+
+The library separates state representation, input conversion, calculation,
+and output encoding. The public entry point composes these responsibilities;
+the transition calculation does not depend on files, streams, or the encoder.
+
+```text
+src/
+├── main/java/com/civilonia/gameoflife/
+│   ├── GameOfLifeSimulator.java
+│   ├── model/
+│   │   └── Board.java
+│   ├── input/
+│   │   └── SimulationInput.java
+│   ├── core/
+│   │   ├── ConwayTransition.java
+│   │   ├── SimulationConditions.java
+│   │   └── SimulationOutput.java
+│   └── output/
+│       └── BinaryStreamEncoder.java
+└── test/java/com/civilonia/gameoflife/
+    ├── model/
+    ├── input/
+    ├── core/
+    └── output/
+docs/
+├── binary-input-format.md
+├── binary-output-format.md
+└── simulation-specification.md
+```
+
+The tree shows the library's implementation and corresponding unit-test
+packages; API and integration tests also live at the test package root.
+
+| Component | Responsibility |
+| --- | --- |
+| `Board` | Immutable dimensions and cell states; coordinate access and board construction. |
+| `SimulationInput` | Immutable initial board and transition count; GOLI conversion and validation. |
+| `ConwayTransition` | Stateless neighbor counting, single-cell rule evaluation, and next-board calculation. |
+| `SimulationConditions` | Immutable output metadata: width, height, and transition count. |
+| `SimulationOutput` | Output boundary with `writeConditions` and `writeBoard` operations. |
+| `BinaryStreamEncoder` | Implements the output boundary by writing GOLF to a caller-owned stream. |
+| `GameOfLifeSimulator` | Coordinates header output, initial-state output, transitions, and subsequent board output. |
+
+`SimulationOutput` belongs to `core` as a boundary contract and can report an
+`IOException`; concrete stream operations belong to `output`. The public
+factory currently selects `BinaryStreamEncoder` internally, rather than
+exposing an output implementation parameter. File creation, stream ownership,
+and application integration belong to the caller.
+
+## State model
+
+`Board` stores positive integer width and height and a private `BitSet`.
+The bit index is `y * width + x`, so the representation follows row-major
+coordinate order. The cell count is checked for integer overflow before
+allocation. An unset bit represents a dead cell.
+
+Construction uses `Board.Builder`, which owns mutable cell bits. `build()`
+copies those bits into a new board, so later builder changes cannot affect an
+existing board. A direct `Board(width, height)` constructs an all-dead board.
+The board exposes dimensions and `isAlive(x, y)` without exposing its bit set.
+Reads outside the board return false; builder writes outside it are rejected.
+
+`SimulationInput` retains the immutable board and a non-negative integer
+transition count. Retaining the board needs no defensive copy because callers
+cannot mutate it. `SimulationConditions` is a record used for output metadata;
+it contains no cell state. Its transition field is a non-negative `long`, while
+the current simulation input accepts only an `int`. The encoder additionally
+requires the metadata transition count to fit the GOLF unsigned 32-bit field.
 
 ## Grid and rules
 
@@ -29,13 +98,31 @@ updated simultaneously from the preceding generation:
 Board dimensions do not change during a run. Boards are immutable, so a
 transition does not modify its input state.
 
-## Experiment input and output
+## Transition calculation
 
-An experiment specifies the board dimensions, the complete initial cell state,
-and a non-negative number of transitions `N`. Unspecified cells in the example
-patterns below are dead. The initial state is `t=0`; each transition produces
-the next generation. A run outputs exactly `N + 1` boards, ordered from `t=0`
-through `t=N`. In particular, `N=0` outputs only the initial board.
+`ConwayTransition` splits a generation update into three operations:
+
+1. `countLiveNeighbors` visits offsets `-1..1` along both axes, excludes the
+   center, and counts living neighbors through `Board.isAlive`. The board's
+   out-of-bounds rule supplies the fixed dead boundary.
+2. `nextState` evaluates `neighbors == 3 || (alive && neighbors == 2)` and
+   rejects neighbor counts outside `0..8`.
+3. `nextGeneration` scans every coordinate, reads only the current board, and
+   writes living next states into a fresh builder with the same dimensions.
+   Dead next states remain unset. It returns a newly built immutable board.
+
+Separating the read board and write builder makes updates synchronous and
+independent of traversal order. The calculation has no mutable global state,
+randomness, or I/O. It performs a full-grid scan even when few cells are alive;
+there is no sparse evolution, parallel update, or cycle detection.
+
+## Simulation input and output
+
+A simulation input specifies the board dimensions, the complete initial cell
+state, and a non-negative number of transitions `N`. The initial state is `t=0`;
+each transition produces the next generation. A run outputs exactly `N + 1`
+boards, ordered from `t=0` through `t=N`. In particular, `N=0` outputs only the
+initial board.
 
 The Java API accepts a `SimulationInput` and writes results to a caller-owned
 stream through `GameOfLifeSimulator`. The caller closes the stream; an I/O
@@ -50,38 +137,65 @@ The binary encodings are specified separately:
   and all boards from `t=0` through `t=N`.
 
 The Java input API limits dimensions, their product, and transition counts to
-values representable by signed 32-bit integers. The standalone example applies
-additional configurable resource limits; see the [README](../README.md).
+values representable by signed 32-bit integers. Invalid dimensions, negative
+transition counts, and malformed GOLI documents are rejected.
 
-## Reproducible examples and validation
+## Execution and data flow
 
-Coordinates below list all live cells. Compare every generated state, not just
-the last one, when validating a run.
-
-| Pattern | Board and initial live cells | Transitions | Expected result |
-| --- | --- | ---: | --- |
-| Empty | 3 × 3; none | 0 | One empty board at `t=0`. |
-| Block | 4 × 4; `(1,1)`, `(2,1)`, `(1,2)`, `(2,2)` | 2 | The same four cells remain alive at `t=1` and `t=2`. |
-| Blinker | 5 × 5; `(2,1)`, `(2,2)`, `(2,3)` | 2 | At `t=1`, `(1,2)`, `(2,2)`, `(3,2)` are alive; `t=2` equals `t=0`. |
-| Glider | 5 × 5; `(1,0)`, `(2,1)`, `(0,2)`, `(1,2)`, `(2,2)` | 4 | At `t=4`, the initial pattern has moved one cell right and down: `(2,1)`, `(3,2)`, `(1,3)`, `(2,3)`, `(3,3)`. |
-
-To reproduce the blinker with the included binary input, run from the
-repository root:
-
-```sh
-./gradlew runProgram --args='src/example/resources/goli/blinker-5x5-two-transitions.goli build/blinker.golf'
+```mermaid
+flowchart LR
+    Input[SimulationInput] --> Simulator[GameOfLifeSimulator]
+    Simulator --> Transition[ConwayTransition]
+    Transition --> Board[Next immutable Board]
+    Board --> Simulator
+    Simulator --> Boundary[SimulationOutput]
+    Boundary --> Encoder[BinaryStreamEncoder]
+    Encoder --> Stream[Caller-owned OutputStream]
 ```
 
-Decode the output using the linked GOLF specification and compare all three
-boards with the table. The complete expected output bytes are documented in
-the [README](../README.md#standalone-example). Repeat the command to verify
-byte-for-byte reproducibility. The repository also provides empty and glider
-inputs in `src/example/resources/goli/`.
+`GameOfLifeSimulator.create(output).simulate(input)` runs synchronously in
+the calling thread. Each factory call creates a separate encoder bound to the
+provided stream. Execution follows this sequence:
 
-Run `./gradlew test` to exercise rule and boundary cases, known patterns,
-generation counts, input validation, output failures, and independent
-reference bytes. The [integration tests](../src/test/java/com/civilonia/gameoflife/GameOfLifeIntegrationTest.java)
-include the expected output for every generation of the examples above.
+```text
+writeConditions(width, height, N)
+current = input.initialBoard
+writeBoard(current)
+repeat N times:
+    current = nextGeneration(current)
+    writeBoard(current)
+```
+
+The orchestrator controls the number and order of emitted boards. It writes
+each board before computing the following generation and does not accumulate
+the full history. For width W, height H, and N transitions, calculation and
+encoding together require O((N + 1) × W × H) time. Board working storage is
+O(W × H) bits up to a constant number of current/new boards and construction
+copies, independent of N. Caller-retained input bytes or output buffers add
+their own storage; a caller that buffers the entire output retains all results.
+
+## Binary conversion and error handling
+
+`SimulationInput.fromBinary` reads a complete GOLI byte array. It validates the
+17-byte header, magic/version, positive dimensions, representable values,
+derived payload length, and zero padding before returning an immutable input.
+`toBinary` creates an independent byte array containing the conditions and
+initial board. Neither operation opens files or closes resources.
+
+`BinaryStreamEncoder` writes the GOLF header before board payloads and retains
+the conditions to check subsequent board dimensions. Calling `writeBoard`
+before conditions is an error. Encoding scans cells in row-major order,
+packs the first cell into the most-significant bit, and writes each completed
+byte immediately. Unused low bits in the final byte remain zero; padding
+restarts for each board. Multi-byte header values use big-endian order.
+Exact layouts and decoding requirements are defined in the format documents.
+
+Null arguments are rejected. Invalid model/input values cause validation
+exceptions; stream write failures propagate as `IOException` and stop the
+simulation. Bytes already written are not rolled back. The simulator and
+encoder neither close nor flush the supplied stream; the caller handles
+buffering, completion, and cleanup. Output metadata is mutable encoder state,
+so concurrent runs should use separate simulator instances and streams.
 
 ## Limitations
 
