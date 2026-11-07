@@ -195,6 +195,12 @@ a broken pipe or failed redirection does not appear to complete successfully.
 
 ### Included experimental inputs
 
+The five reproduction experiments (block, horizontal blinker, glider,
+R-pentomino, and Gosper glider gun) have separate offline inputs and tools in
+the example source set. See the [simulation plan](docs/simulation-plan.md) for
+generation, execution with metadata recording, independent verification, and
+validated CSV export. These tools require no additional runtime dependencies.
+
 The example source set contains reproducible, version-controlled `GOLI`
 resources under `src/example/resources/goli/`.
 

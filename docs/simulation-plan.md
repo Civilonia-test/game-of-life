@@ -7,9 +7,9 @@ the sample code needed to execute and verify the experiments. Both documents are
 local to this repository; no external research documents or pattern downloads
 are required.
 
-The experiment resources and helper classes described here are planned work;
-they are not implemented yet. Commands using those helpers become executable
-only after implementation. Existing library regression examples remain separate.
+The experiment resources and helper classes are included in the example source
+set. Build them with Java 21 before running the commands below. Existing library
+regression examples remain separate.
 
 ## Objectives and common conditions
 
@@ -73,39 +73,49 @@ defined in [RLE decoding](#rle-decoding) below.
 
 ## Execution commands and resource limits
 
-After implementation, run from this repository with Java 21. Build the existing
-example source set, generate the inputs, and run and verify all three small
-cases before either main experiment. The proposed generator's single argument
-is the run root. Its normal mode writes all five case inputs and checks them
-against the committed resources.
+Run from this repository with Java 21 (the included devcontainer provides it).
+Choose a new run root for every attempt; generation refuses any existing root.
+The generator compares all five inputs and the manifest against bundled resources
+before creating the run. It also copies the gun RLE for offline preservation.
 
 ```sh
+set -e
 ./gradlew exampleClasses
 EXPERIMENT_CP=build/classes/java/main:build/classes/java/example:build/resources/example
-EXPERIMENT_PACKAGE=com.civilonia.gameoflife.example
-java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.experiment.GenerateInputs" build/experiments
+EXPERIMENT_PACKAGE=com.civilonia.gameoflife.example.experiment
+RUN_ROOT=build/experiments/run-001
+java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.GenerateInputs" "$RUN_ROOT"
 for case_id in block blinker glider; do
-  java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.Program" \
-    "build/experiments/$case_id/input.goli" "build/experiments/$case_id/result.golf" || exit 1
-  java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.experiment.VerifyResult" \
-    "$case_id" "build/experiments/$case_id/input.goli" \
-    "build/experiments/$case_id/result.golf" || exit 1
+  java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.RunExperiment" \
+    "$case_id" "$RUN_ROOT/$case_id"
 done
 java -Dgameoflife.maxCellGenerations=292384343 \
-  -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.Program" \
-  build/experiments/r-pentomino/input.goli build/experiments/r-pentomino/result.golf
-java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.experiment.VerifyResult" \
-  r-pentomino build/experiments/r-pentomino/input.goli build/experiments/r-pentomino/result.golf
-java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.Program" \
-  build/experiments/gosper-glider-gun/input.goli build/experiments/gosper-glider-gun/result.golf
-java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.experiment.VerifyResult" \
-  gosper-glider-gun build/experiments/gosper-glider-gun/input.goli build/experiments/gosper-glider-gun/result.golf
+  -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.RunExperiment" \
+  r-pentomino "$RUN_ROOT/r-pentomino"
+java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.RunExperiment" \
+  gosper-glider-gun "$RUN_ROOT/gosper-glider-gun"
+java -cp "$EXPERIMENT_CP" "$EXPERIMENT_PACKAGE.ExportGeneration" \
+  "$RUN_ROOT/glider/input.goli" "$RUN_ROOT/glider/result.golf" \
+  4 "$RUN_ROOT/glider/generation-4.csv"
 ```
 
-For both main runs, stop immediately on a nonzero execution or verification
-exit status; the commands are individual steps, not an unattended batch. The
-verifier writes `validation.json` beside the result. Export boards or coordinates
-only after successful verification, using the interfaces in the sample code design.
+`RunExperiment` invokes the existing `Program` and then `VerifyResult` in the
+same JVM, so system properties apply directly to the simulation. It refuses
+existing results, observations, or reports. Failed output remains in the run
+directory for diagnosis, without a successful validation report. Every helper
+returns a nonzero process exit status on failure and prints diagnostics; stop
+and resolve failures before proceeding. Capture standard error in a run log
+when retaining diagnostics.
+
+`VerifyResult` may also be invoked separately with the case ID, input path, and
+result path. It replaces any earlier `validation.json` with a successful report
+only after checking the complete result; a failed attempt removes the stale
+report. Reports record both file checksums, conditions, generation count, and
+which checks were performed. They certify structural/fixture checks, not
+scientific observations. Export revalidates the entire result and requires an
+exactly matching successful report; existing export destinations are rejected.
+CSV comments identify the case, generation, input/result checksums, origin and
+axes. Rows are sorted by x, then y. Read the CSV while ignoring `#` comment lines.
 
 Leave `Program` defaults unchanged except for the R-pentomino computation
 limit: input 1 MiB, 1,000,000 cells, 10,000 transitions, 10,000,000
@@ -124,8 +134,8 @@ Sizes use `bytesPerBoard = ceil(width * height / 8)`, GOLI length
 `17 + bytesPerBoard`, and GOLF length `17 + (N + 1) * bytesPerBoard`.
 Confirm CPU, available memory, free space, and a short timing measurement before
 the main experiments. The current algorithm scans the entire board each
-generation; elapsed time is not yet measured. A changed board or N requires
-recomputing sizes and limits.
+generation; use the recorded elapsed time to assess performance. A changed
+board or N requires recomputing sizes and limits.
 
 ## Run acceptance
 
@@ -136,13 +146,19 @@ saved generation. The verifier algorithm and failure handling are defined in
 [Verification and failure handling](#verification-and-failure-handling) below.
 
 The planned main boards were estimated using an independent unbounded-grid
-calculation and one dead-cell margin; they have not yet been verified by this
-simulator. Validate every boundary at every generation before accepting the
-observation period as free of boundary effects.
+calculation and one dead-cell margin. Validate every boundary at every generation
+before accepting the observation period as free of boundary effects.
 
-## Observation, preservation, and implementation gaps
+## Observation and preservation
 
-Store input and output checksums, RLE conversion details and decoded initial
+`RunExperiment` creates `observations.md` with the process command, environment,
+effective limits, compiled-library fingerprint, input/result checksums, status,
+and elapsed execution-plus-verification time. The compiled fingerprint hashes
+the ordered names and bytes of all library classes (including `Board.Builder`).
+Set `-Dgameoflife.simulatorVersion=<version>` to record a known release version;
+the default is `development`. Add scientific observations manually.
+
+Preserve input and output checksums, RLE conversion details and decoded initial
 coordinates, case conditions, simulator version and compiled artifact checksum,
 Java/OS versions, CPU and available resources, exact commands and effective
 limits, exit status, elapsed time, and artifact checksums/paths in `observations.md`. Validation
@@ -161,19 +177,19 @@ Document that region and phase when analyzing the data. Do not infer a static
 whole board or prove infinite growth from a finite run. Record unclassified
 structures and inconclusive comparisons explicitly.
 
-Existing capabilities are the public board/input/simulation APIs, GOLI encoding,
-GOLF output, `Program`, and the earlier small fixtures. The five experimental
-resources, bundled RLE and manifest, generator, independent GOLF verifier,
-exporter, and their documented commands remain to be implemented. Implementation
-checks must cover incorrect conversion, intermediate known-pattern states,
-truncation, extra bytes, invalid padding, initial mismatch, and boundary contact.
+The example tests cover deterministic input/manifest regeneration, RLE decoding,
+intermediate known-pattern states, truncation, extra bytes, malformed headers,
+invalid padding, initial mismatches, boundary contact, stale reports, export
+validation, and refusal to overwrite prior artifacts. Run `./gradlew build`
+to execute these checks alongside the library tests.
 
 Generated files under `build/` are temporary. Before marking execution complete,
-copy each case's inputs, validated outputs, reports, observations, and exports
-to `data/game-of-life/<case-id>/` in this repository's working directory.
-Preserve them outside the disposable build directory and record their paths
-and checksums in `observations.md`; repeat runs must use separate directories
-so earlier results are not overwritten. Publishing or moving this archive
+copy the entire run root, including its manifest, source RLE, and each case's
+inputs, validated outputs, reports, observations, and exports, to a new
+`data/game-of-life/<run-id>/` in this repository's working directory. Preserve
+them outside the disposable build directory and record their paths and
+checksums in `observations.md`; repeat runs must use separate directories so
+earlier results are not overwritten. Publishing or moving this archive
 elsewhere is optional and is not required to run or interpret the samples.
 Exact runtime and the detailed classification of R-pentomino structures remain
 to be established during execution/analysis. These analysis choices do not
@@ -209,34 +225,34 @@ generation counts, input validation, output failures, and independent
 reference bytes. The [integration tests](../src/test/java/com/civilonia/gameoflife/GameOfLifeIntegrationTest.java)
 include the expected output for every generation of the examples above.
 
-## Planned sample implementation
+## Sample implementation
 
-The following helpers extend the example source set and remain to be
-implemented. They use the simulator's public APIs without changing the library
-rules or binary formats.
+The following helpers extend the example source set. They use the simulator's
+public APIs without changing the library rules or binary formats.
 
 ### Example code responsibilities
 
-Place the following proposed classes in
+The classes are in
 `src/example/java/com/civilonia/gameoflife/example/experiment/`:
 
 | Class | Responsibility |
 | --- | --- |
 | `ExperimentCases` | Fixed case IDs, dimensions, N, coordinates, local RLE resources, and expected checks. No simulation logic. |
 | `GenerateInputs` | Parse the bundled RLE, build boards, write GOLI with `SimulationInput.toBinary()`, and compare generated bytes with committed resources. |
+| `RunExperiment` | Invoke `Program`, verify output, refuse prior artifacts, and record timing/environment/limits/checksums. |
 | `VerifyResult` | Stream-decode GOLF independently of the encoder, check the input and every generation, and write a machine-readable validation report. Exit nonzero on any failure. |
-| `ExportGeneration` | Read a validated result and export a requested generation as sorted `(x,y)` CSV or a portable monochrome image. Record the case, generation, and source result checksum. |
+| `ExportGeneration` | Revalidate a result and export a requested generation as sorted `(x,y)` CSV. Record the case, generation, and input/result checksums. |
 
 Keep RLE decoding and all filesystem handling in the example source set.
 Reuse `Program` for execution and its preflight resource limits. Use only Java
 21 and the standard library. Generated results belong under
-`build/experiments/<case-id>/` and must not overwrite committed input resources.
+`build/experiments/<run-id>/<case-id>/` and must not overwrite committed input resources.
 Each case directory contains `input.goli`, `result.golf`, `validation.json`,
 `observations.md`, and optional exports. Preserve failed runs and logs separately;
 never label them as validated results.
 
-Input generation follows this representative pseudocode; helpers are proposed
-example code, while `Board` and `SimulationInput` are existing public APIs:
+Input generation follows this sequence; `Board` and `SimulationInput` are the
+library's public APIs:
 
 ```text
 for case in ExperimentCases:
@@ -254,8 +270,11 @@ for case in ExperimentCases:
 
 For coordinate-defined cases, use the absolute cells in the simulation plan
 and offset zero. Apply the RLE offset specified by the selected case after
-decoding. The generator must offer a deliberate resource-update mode for
-initially creating or subsequently changing committed inputs; ordinary generation only compares against them.
+decoding. To deliberately update committed inputs and their manifest, run
+`GenerateInputs --update-resources src/example/resources/experiments` from the
+repository root after building. This mode overwrites those resources and copies
+the bundled RLE. Change the authoritative RLE file before building when updating
+the pattern. Ordinary generation only compares against bundled resources.
 
 `GenerateInputs <run-root>` writes all case inputs into new run directories.
 `VerifyResult <case-id> <input.goli> <result.golf>` writes `validation.json`
@@ -263,7 +282,7 @@ beside the result and exits nonzero if any check fails.
 `ExportGeneration <input.goli> <result.golf> <generation> <output.csv>` exports
 sorted live-cell coordinates. Before export, revalidate the input/output
 structure and require a successful validation report with matching file
-checksums. Optional monochrome image export must preserve the same coordinates.
+checksums. Monochrome image export is not implemented.
 
 ### RLE decoding
 
@@ -273,7 +292,10 @@ the header and B3/S23 rule, and expands decimal run lengths (default 1).
 resets x to zero, and `!` terminates the pattern. Reject invalid tokens,
 missing termination, trailing payload tokens, runs exceeding declared
 dimensions, and overflow. Omitted cells are dead. Validate the decoded bounding
-box, live-cell count, and translated placement against the selected case's requirements before constructing the board.
+box, live-cell count, and translated placement against the selected case's
+requirements before constructing the board. The RLE reader is bounded to 64 KiB
+of text, one million declared cells, and runs up to one million cells; this is
+a decoder for the bundled experiment data rather than a general RLE library.
 
 ### Verification and failure handling
 
