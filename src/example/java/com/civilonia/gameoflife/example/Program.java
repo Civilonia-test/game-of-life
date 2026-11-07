@@ -2,6 +2,7 @@ package com.civilonia.gameoflife.example;
 
 import com.civilonia.gameoflife.GameOfLifeSimulator;
 import com.civilonia.gameoflife.input.SimulationInput;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,7 +57,7 @@ public final class Program {
         if (outputDirectory != null) {
             Files.createDirectories(outputDirectory);
         }
-        try (OutputStream output = Files.newOutputStream(outputPath)) {
+        try (OutputStream output = new BufferedOutputStream(Files.newOutputStream(outputPath))) {
             GameOfLifeSimulator.create(output).simulate(input);
         }
 
